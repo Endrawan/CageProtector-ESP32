@@ -1,21 +1,31 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Firebase_ESP_Client.h>
-
-//Provide the token generation process info.
 #include "addons/TokenHelper.h"
-//Provide the RTDB payload printing info and other helper functions.
 #include "addons/RTDBHelper.h"
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
+#include <Servo.h>
+#include <NTPClient.h>
+#include <Adafruit_Fingerprint.h>
+#include <WiFiUdp.h>
+
+#include "Date.h"
+#include "Axis.h"
+#include "MPU6050.h"
+#include "Fingerprint.h"
+#include "Cage.h"
 
 // Network credentials
-#define WIFI_SSID "H 18"
-#define WIFI_PASSWORD "ardalena"
+#define WIFI_SSID "ACER 5509"
+#define WIFI_PASSWORD "lalalala"
 
 // Insert Firebase project API Key
 #define API_KEY "AIzaSyCvdL17w64g-opNXXrChW1J5rHQluw2EQM"
 
 // Insert RTDB URLefine the RTDB URL */
-#define DATABASE_URL "https://cageprotector-default-rtdb.asia-southeast1.firebasedatabase.app/" 
+#define DATABASE_URL "https://cageprotector-default-rtdb.asia-southeast1.firebasedatabase.app/"
 
 //Define Firebase Data object
 FirebaseData fbdo;
@@ -25,27 +35,16 @@ FirebaseConfig config;
 int count = 0;
 bool signupOK = false;
 
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <Wire.h>
 Adafruit_MPU6050 mpu;
-const float GYROSCOPE_DANGER_THRESHOLD = 0.5235987756; // 30 degrees
-const float GYROSCOPE_WARNING_THRESHOLD = 0.1745329252; // 30 degrees
+const float GYROSCOPE_DANGER_THRESHOLD = 0.5235987756;   // 30 degrees
+const float GYROSCOPE_WARNING_THRESHOLD = 0.1745329252;  // 30 degrees
 
-const float ACCELEROMETER_DANGER_THRESHOLD = 1; // 1 m/s^2
-const float ACCELEROMETER_WARNING_THRESHOLD = 0.5; // 0.5 m/s^2
+const float ACCELEROMETER_DANGER_THRESHOLD = 1;     // 1 m/s^2
+const float ACCELEROMETER_WARNING_THRESHOLD = 0.5;  // 0.5 m/s^2
 
-float gyro_base_x = 0, gyro_base_y = 0, gyro_base_z = 0;
-float accel_base_x = 0, accel_base_y = 0, accel_base_z = 0;
-
-float gyro_x = 0, gyro_y = 0, gyro_z = 0;
-float accel_x = 0, accel_y = 0, accel_z = 0;
-
-#include <Servo.h>
 #define SERVO_ACTUATOR 13
 Servo door_servo;
 
-#include <Adafruit_Fingerprint.h>
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&Serial2);
 uint8_t id;
 unsigned int fingerprint_trying_limit = 0;
@@ -58,204 +57,295 @@ const unsigned int FINGERPRINT_TRY_LIMIT = 3;
 
 #define BUZZER 18
 
-boolean PIR_sensor_status_1 = false, PIR_sensor_status_2 = false, PIR_sensor_status_3 = false, PIR_sensor_status_4 = false;
-unsigned int PIR_stack = 0; // Untuk menyimpan seberapa lama PIR terdeteksi
+unsigned int PIR_stack = 0;  // Untuk menyimpan seberapa lama PIR terdeteksi
 const unsigned int PIR_STACK_LIMIT = 10;
 
 const unsigned long fingerprint_event_time = 50;
 const unsigned long gyroscope_event_time = 1000;
 const unsigned long PIR_event_time = 1000;
-const unsigned long firebase_event_time = 5000;
-unsigned long fingerprint_t = 0, gyroscope_t = 0, PIR_t = 0, firebase_t = 0;
+const unsigned long firebase_event_time = 2000;
+const unsigned long buzzer_beep_event_time = 1000;
+unsigned long fingerprint_t = 0, gyroscope_t = 0, PIR_t = 0, firebase_t = 0, buzzer_t = 0;
 
 const byte STATUS_STANDBY = 0;
 const byte STATUS_WARNING = 1;
 const byte STATUS_DANGER = 2;
 const byte STATUS_DOOR_OPENED = 3;
+const byte STATUS_FINGERPRINT_ENROLL = 5;
+const byte STATUS_CALIBRATE_MPU6050 = 6;
 
-byte system_status = STATUS_STANDBY;
+const byte FINGERPRINT_STATUS_LISTENING = 0;
+const byte FINGERPRINT_STATUS_ENROLL = 1;
+const byte FINGERPRINT_ENROLL_STATUS_READY = 0;
+const byte FINGERPRINT_ENROLL_STATUS_FAILED = 2;
+const byte FINGERPRINT_ENROLL_STATUS_SUCCESS = 1;
+
+const char* ntpServer = "0.id.pool.ntp.org";
+const long gmtOffset_sec = 25200;
+const int daylightOffset_sec = 0;
+
+// Define NTP Client to get time
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
+Date prevArduinoTime = Date();
+Date arduinoTime = Date();
+Date androidTime = Date();
+
+Cage cage = Cage();
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) // Menunggu serial terkoneksi
+  while (!Serial)  // Menunggu serial terkoneksi
     delay(10);
 
-  // Inisialisasi PIR Sensor
+  // // Inisialisasi PIR Sensor
   pinMode(PIR_SENSOR_1, INPUT);
   pinMode(PIR_SENSOR_2, INPUT);
   pinMode(PIR_SENSOR_3, INPUT);
   pinMode(PIR_SENSOR_4, INPUT);
 
-  // Inisialisasi Buzzer
+  // // Inisialisasi Buzzer
   pinMode(BUZZER, OUTPUT);
 
-  // Inisialisasi Gyroscope
+  // // Inisialisasi Gyroscope
   initialize_gyroscope_sensor();
 
-  // Inisialisasi Fingerprint
+  // // Inisialisasi Fingerprint
   initialize_fingerprint_sensor();
 
   // Inisialisasi Firebase
   initialize_firebase();
+
+  // Inisialisasi Timestamp
+  initialize_timestamp();
 }
 
 void loop() {
-  // PIR_handler();
-  fingerprint_handler();
-  gyroscope_handler();
-  firebase_handler();
-  // Serial.println("Is fingerprint handler blocking thread?");
-  // delay(1000);
-}
-
-void change_status(byte STATUS) {
-  system_status = STATUS;
-  switch(STATUS) {
+  Serial.print("System Status:");
+  Serial.println(cage.getSystemStatus());
+  switch (cage.getSystemStatus()) {
     case STATUS_STANDBY:
-      Serial.println("STATUS: STANDBY");
-      buzzer_turn_off();
-      close_door();
+      // cage.setAlertStatus(true);
+      fingerprint_trying_limit = 0;
+      PIR_stack = 0;
+      while(cage.getSystemStatus() == STATUS_STANDBY) {
+        // PIR_handler();
+        fingerprint_handler();
+        gyroscope_handler();
+        buzzer_handler();
+        sync_firebase_handler();
+      }
       break;
     case STATUS_WARNING:
-      Serial.println("STATUS: WARNING");
-      buzzer_fire_beep();
+      while(cage.getSystemStatus() == STATUS_WARNING) {
+        // PIR_handler();
+        fingerprint_handler();
+        gyroscope_handler();
+        buzzer_handler();
+        sync_firebase_handler();
+      }
       break;
     case STATUS_DANGER:
-      Serial.println("STATUS: DANGER");
-      buzzer_fire_long();
+      while(cage.getSystemStatus() == STATUS_DANGER) {
+        buzzer_handler();
+        sync_firebase_handler();
+      }
       break;
     case STATUS_DOOR_OPENED:
-      Serial.println("STATUS: DOOR OPENED");
-      buzzer_turn_off();
       open_door();
+      cage.setAlertStatus(false);
+      while(cage.getSystemStatus() == STATUS_DOOR_OPENED) {
+        fingerprint_handler();
+        sync_firebase_handler();
+      }
+      close_door();
+      break;
+    case STATUS_FINGERPRINT_ENROLL:
+      break;
+    case STATUS_CALIBRATE_MPU6050:
+      while(cage.getSystemStatus() == STATUS_CALIBRATE_MPU6050) {
+        calibrate_mpu6050_handler();
+        sync_firebase_handler();
+      }
       break;
   }
 }
 
-void PIR_handler() {
-  if(millis() - PIR_t >= PIR_event_time) {
-    PIR_t = millis();
-    boolean PIR_status_1 = digitalRead(PIR_SENSOR_1);
-    boolean PIR_status_2 = digitalRead(PIR_SENSOR_2);
-    boolean PIR_status_3 = digitalRead(PIR_SENSOR_3);
-    boolean PIR_status_4 = digitalRead(PIR_SENSOR_4);
+void sync_firebase_handler() {
+  if (Firebase.ready() && signupOK && (millis() - firebase_t > firebase_event_time)) {
+    firebase_t = millis();
+    String last_updated_android;
+    if (!firebase_get_string("last_updated_android", last_updated_android)) {
+      Serial.println("Tidak bisa mengambil data last_updated_android dari firebase!");
+      return;
+    }
 
-    PIR_sensors_troubleshoot();
+    cage.setLastUpdatedAndroid(last_updated_android);
+    androidTime.setDateFromFirebase(last_updated_android);
 
-    if(PIR_status_1 || PIR_status_2 || PIR_status_3 || PIR_status_4) {
-      PIR_stack++;
-      if(PIR_stack >= PIR_STACK_LIMIT) { // Lebih dari 10 detik
-        change_status(STATUS_DANGER);
+    if (androidTime.isLatestThan(prevArduinoTime)) {
+      int latestSystemStatus;
+      if (!firebase_get_int("system_status", latestSystemStatus)) {
+        Serial.println("Tidak bisa mengambil data system_status dari firebase!");
       } else {
-        change_status(STATUS_WARNING);
+        cage.setSystemStatus(latestSystemStatus);
+      }
+
+      bool latestAlertStatus;
+      if (!firebase_get_bool("alert_status", latestAlertStatus)) {
+        Serial.println("Tidak bisa mengambil data system_status dari firebase!");
+      } else {
+        cage.setAlertStatus(latestAlertStatus);
+      }
+    }
+
+    updateCageDataToFirebase();
+  }
+}
+
+void updateCageDataToFirebase() {
+  String t = timeClient.getFormattedDate();
+  arduinoTime.setDateTimeClientString(t);
+  cage.setLastUpdatedArduino(arduinoTime.printToFirebaseFormat());
+
+  firebase_set_int("system_status", cage.getSystemStatus());
+  firebase_set_float("mpu6050/accelerometer/x", cage.getMpu6050().getAccelerometer().getX());
+  firebase_set_float("mpu6050/accelerometer/y", cage.getMpu6050().getAccelerometer().getY());
+  firebase_set_float("mpu6050/accelerometer/z", cage.getMpu6050().getAccelerometer().getZ());
+  firebase_set_float("mpu6050/gyroscope/x", cage.getMpu6050().getGyroscope().getX());
+  firebase_set_float("mpu6050/gyroscope/y", cage.getMpu6050().getGyroscope().getY());
+  firebase_set_float("mpu6050/gyroscope/z", cage.getMpu6050().getGyroscope().getZ());
+  firebase_set_bool("PIR/0", cage.getPIR(0));
+  firebase_set_bool("PIR/1", cage.getPIR(1));
+  firebase_set_bool("PIR/2", cage.getPIR(2));
+  firebase_set_bool("PIR/3", cage.getPIR(3));
+  // firebase_set_string("last_updated_android", cage.getLastUpdatedAndroid());
+  firebase_set_bool("alert_status", cage.getAlertStatus());
+  firebase_set_bool("buzzer_status", cage.getBuzzerStatus());
+  firebase_set_string("last_updated_arduino", cage.getLastUpdatedArduino());
+
+  prevArduinoTime.setDateFromFirebase(arduinoTime.printToFirebaseFormat());
+}
+
+void PIR_handler() {
+  if (millis() - PIR_t >= PIR_event_time) {
+    PIR_t = millis();
+
+    bool pir1 = digitalRead(PIR_SENSOR_1);
+    bool pir2 = digitalRead(PIR_SENSOR_2);
+    bool pir3 = digitalRead(PIR_SENSOR_3);
+    bool pir4 = digitalRead(PIR_SENSOR_4);
+ 
+    Serial.print("PIR1: "); Serial.print(pir1); Serial.print("; PIR2: "); Serial.print(pir2); Serial.print("; PIR3: "); Serial.print(pir3); Serial.print("; PIR4: "); Serial.println(pir3);
+    cage.setPIR(pir1, pir2, pir3, pir4);
+
+    if ((pir1 || pir2 || pir3 || pir4) && cage.getAlertStatus()) {
+      PIR_stack++;
+      if (PIR_stack >= PIR_STACK_LIMIT) {  // Lebih dari 10 detik
+        cage.setSystemStatus(STATUS_DANGER);
+      } else {
+        cage.setSystemStatus(STATUS_WARNING);
       }
     } else {
       PIR_stack = 0;
-      change_status(STATUS_STANDBY);
+      cage.setSystemStatus(STATUS_STANDBY);
     }
+  }
+}
+
+void buzzer_handler() {
+  if ((millis() - buzzer_t >= buzzer_beep_event_time) && cage.getSystemStatus() == STATUS_WARNING) {
+    buzzer_t = millis();
+    cage.setBuzzerStatus(!cage.getBuzzerStatus());
+    if(cage.getBuzzerStatus()) { // If buzzer active
+      digitalWrite(BUZZER, HIGH);
+    } else {
+      digitalWrite(BUZZER, HIGH);
+    }
+  } else if (cage.getSystemStatus() == STATUS_DANGER) {
+    digitalWrite(BUZZER, HIGH);
+  }
+  else {
+    digitalWrite(BUZZER, LOW);
   }
 }
 
 void fingerprint_handler() {
-  if(millis() - fingerprint_t >= fingerprint_event_time) {
+  if (millis() - fingerprint_t >= fingerprint_event_time) {
     fingerprint_t = millis();
     uint8_t fingerprint_check_result = getFingerprintID();
 
-    if(fingerprint_check_result == FINGERPRINT_NOTFOUND) {
+    if (fingerprint_check_result == FINGERPRINT_NOTFOUND && cage.getAlertStatus()) {
       fingerprint_trying_limit++;
 
-      if(fingerprint_trying_limit >= FINGERPRINT_TRY_LIMIT) {
-        change_status(STATUS_DANGER);
+      if (fingerprint_trying_limit >= FINGERPRINT_TRY_LIMIT) {
+        cage.setSystemStatus(STATUS_DANGER);
       } else {
-        change_status(STATUS_WARNING);
+        cage.setSystemStatus(STATUS_WARNING);
       }
     } else if (fingerprint_check_result == FINGERPRINT_OK) {
+      fingerprint_trying_limit = 0;
       Serial.println("Pintu dibukaaaa!!!!");
-      if(system_status == STATUS_STANDBY) {
-        change_status(STATUS_DOOR_OPENED);
+      if (cage.getSystemStatus() != STATUS_DOOR_OPENED) {
+        cage.setSystemStatus(STATUS_DOOR_OPENED);
       } else {
-        change_status(STATUS_STANDBY);
+        cage.setSystemStatus(STATUS_STANDBY);
       }
     }
   }
 }
 
+void fingerprint_enroll_handler() {
+
+}
+
 void gyroscope_handler() {
-  if(millis() - gyroscope_t >= gyroscope_event_time) {
+  if (millis() - gyroscope_t >= gyroscope_event_time) {
     gyroscope_t = millis();
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
 
-    accel_x = a.acceleration.x;
-    accel_y = a.acceleration.y;
-    accel_z = a.acceleration.z;
+    cage.getMpu6050().getAccelerometer().setXYZ(a.acceleration.x, a.acceleration.y, a.acceleration.z);
+    cage.getMpu6050().getGyroscope().setXYZ(g.gyro.x, g.gyro.y, g.gyro.z);
 
-    gyro_x = g.gyro.x;
-    gyro_y = g.gyro.y;
-    gyro_z = g.gyro.z;
-
-    if(
-      (abs(accel_x - accel_base_x) >= ACCELEROMETER_DANGER_THRESHOLD) || 
-      (abs(accel_y - accel_base_y) >= ACCELEROMETER_DANGER_THRESHOLD) || 
-      (abs(accel_z - accel_base_z) >= ACCELEROMETER_DANGER_THRESHOLD) || 
-      (abs(gyro_x - gyro_base_x) >= GYROSCOPE_DANGER_THRESHOLD) || 
-      (abs(gyro_y - gyro_base_y) >= GYROSCOPE_DANGER_THRESHOLD) || 
-      (abs(gyro_z - gyro_base_z) >= GYROSCOPE_DANGER_THRESHOLD) 
-    ) {
-      change_status(STATUS_DANGER);
+    if (cage.getBaseMpu6050().isExceedThreshold(cage.getMpu6050(), ACCELEROMETER_DANGER_THRESHOLD, GYROSCOPE_DANGER_THRESHOLD) && cage.getAlertStatus()) {
+      cage.setSystemStatus(STATUS_DANGER);
+    } else {
+      if (cage.getBaseMpu6050().isExceedThreshold(cage.getMpu6050(), ACCELEROMETER_WARNING_THRESHOLD, GYROSCOPE_WARNING_THRESHOLD) && cage.getAlertStatus()) {
+        cage.setSystemStatus(STATUS_WARNING);
+      }
     }
-    else if (
-      (abs(accel_x - accel_base_x) >= ACCELEROMETER_WARNING_THRESHOLD) || 
-      (abs(accel_y - accel_base_y) >= ACCELEROMETER_WARNING_THRESHOLD) || 
-      (abs(accel_z - accel_base_z) >= ACCELEROMETER_WARNING_THRESHOLD) || 
-      (abs(gyro_x - gyro_base_x) >= GYROSCOPE_WARNING_THRESHOLD) || 
-      (abs(gyro_y - gyro_base_y) >= GYROSCOPE_WARNING_THRESHOLD) || 
-      (abs(gyro_z - gyro_base_z) >= GYROSCOPE_WARNING_THRESHOLD)
-    ) {
-      change_status(STATUS_WARNING);
-    }   
   }
 }
 
-void firebase_handler() {
-  if (Firebase.ready() && signupOK && (millis() - firebase_t > firebase_event_time)){
-    firebase_t = millis();
+void calibrate_mpu6050_handler() {
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
 
-    // Get status first before set to local value
-    if (Firebase.RTDB.getInt(&fbdo, "system_status")) {
-      if (fbdo.dataType() == "int") {
-        int firebase_system_status = fbdo.intData();
-        Serial.println(firebase_system_status);
-        change_status(firebase_system_status);
-      }
-    }
-    else {
-      Serial.println(fbdo.errorReason());
-    }
+  cage.getBaseMpu6050().getAccelerometer().setXYZ(a.acceleration.x, a.acceleration.y, a.acceleration.z);
+  cage.getBaseMpu6050().getGyroscope().setXYZ(g.gyro.x, g.gyro.y, g.gyro.z);
+}
 
-    firebase_set_int("system_status", system_status);
-    firebase_set_float("accelerometer/x", accel_x);
-    firebase_set_float("accelerometer/y", accel_y);
-    firebase_set_float("accelerometer/z", accel_z);
-    firebase_set_float("gyroscope/x", gyro_x);
-    firebase_set_float("gyroscope/y", gyro_y);
-    firebase_set_float("gyroscope/z", gyro_z);
-    firebase_set_bool("PIR/0", PIR_sensor_status_1);
-    firebase_set_bool("PIR/1", PIR_sensor_status_2);
-    firebase_set_bool("PIR/2", PIR_sensor_status_3);
-    firebase_set_bool("PIR/3", PIR_sensor_status_4);
+void initialize_timestamp() {
+  timeClient.begin();
+  timeClient.setTimeOffset(25200);
+
+  while (!timeClient.update()) {
+    timeClient.forceUpdate();
+    Serial.println("Cannot update timeClient!");
   }
+
+  prevArduinoTime.setDateTimeClientString(timeClient.getFormattedDate());
 }
 
 // Init Firebase
 void initialize_firebase() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to Wi-Fi");
-  while (WiFi.waitForConnectResult() != WL_CONNECTED){
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.print(".");
     delay(300);
-    // Serial.print("\nWiFi status: ");
-    // Serial.println(WiFi.status());
   }
   Serial.println();
   Serial.print("Connected with IP: ");
@@ -269,17 +359,16 @@ void initialize_firebase() {
   config.database_url = DATABASE_URL;
 
   /* Sign up */
-  if (Firebase.signUp(&config, &auth, "", "")){
+  if (Firebase.signUp(&config, &auth, "", "")) {
     Serial.println("ok");
     signupOK = true;
-  }
-  else{
+  } else {
     Serial.printf("%s\n", config.signer.signupError.message.c_str());
   }
 
   /* Assign the callback function for the long running token generation task */
-  config.token_status_callback = tokenStatusCallback; //see addons/TokenHelper.h
-  
+  config.token_status_callback = tokenStatusCallback;  //see addons/TokenHelper.h
+
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
 }
@@ -293,7 +382,7 @@ void initialize_fingerprint_sensor() {
   // set the data rate for the sensor serial port
   finger.begin(57600);
   delay(5);
-  while(!finger.verifyPassword()) {
+  while (!finger.verifyPassword()) {
     Serial.println("Sensor fingerprint tidak ditemukan :(");
     delay(1000);
   }
@@ -301,22 +390,30 @@ void initialize_fingerprint_sensor() {
 
   Serial.println(F("Membaca parameter sensor"));
   finger.getParameters();
-  Serial.print(F("Status: 0x")); Serial.println(finger.status_reg, HEX);
-  Serial.print(F("Sys ID: 0x")); Serial.println(finger.system_id, HEX);
-  Serial.print(F("Capacity: ")); Serial.println(finger.capacity);
-  Serial.print(F("Security level: ")); Serial.println(finger.security_level);
-  Serial.print(F("Device address: ")); Serial.println(finger.device_addr, HEX);
-  Serial.print(F("Packet len: ")); Serial.println(finger.packet_len);
-  Serial.print(F("Baud rate: ")); Serial.println(finger.baud_rate);
+  Serial.print(F("Status: 0x"));
+  Serial.println(finger.status_reg, HEX);
+  Serial.print(F("Sys ID: 0x"));
+  Serial.println(finger.system_id, HEX);
+  Serial.print(F("Capacity: "));
+  Serial.println(finger.capacity);
+  Serial.print(F("Security level: "));
+  Serial.println(finger.security_level);
+  Serial.print(F("Device address: "));
+  Serial.println(finger.device_addr, HEX);
+  Serial.print(F("Packet len: "));
+  Serial.println(finger.packet_len);
+  Serial.print(F("Baud rate: "));
+  Serial.println(finger.baud_rate);
 
   finger.getTemplateCount();
 
   if (finger.templateCount == 0) {
     Serial.print("Sensor tidak menyimpan data fingerprint, tolong jalankan enroll terlebih dahulu!");
-  }
-  else {
+  } else {
     Serial.println("Menunggu jari...");
-    Serial.print("Sensor menyimpan "); Serial.print(finger.templateCount); Serial.println(" templates");
+    Serial.print("Sensor menyimpan ");
+    Serial.print(finger.templateCount);
+    Serial.println(" templates");
   }
 }
 
@@ -325,7 +422,7 @@ void initialize_fingerprint_sensor() {
  * Inisialisasi sensor gyroscope
  */
 void initialize_gyroscope_sensor() {
-  while(!mpu.begin()) {
+  while (!mpu.begin()) {
     Serial.println("Gagal mencari MPU6050 chip");
     delay(1000);
   }
@@ -343,13 +440,8 @@ void initialize_gyroscope_sensor() {
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  accel_base_x = a.acceleration.x;
-  accel_base_y = a.acceleration.y;
-  accel_base_z = a.acceleration.z;
-
-  gyro_base_x = g.gyro.x;
-  gyro_base_y = g.gyro.y;
-  gyro_base_z = g.gyro.z;
+  cage.getBaseMpu6050().getAccelerometer().setXYZ(a.acceleration.x, a.acceleration.y, a.acceleration.z);
+  cage.getBaseMpu6050().getGyroscope().setXYZ(g.gyro.x, g.gyro.y, g.gyro.z);
 }
 
 uint8_t getFingerprintID() {
@@ -412,8 +504,10 @@ uint8_t getFingerprintID() {
   }
 
   // found a match!
-  Serial.print("Found ID #"); Serial.print(finger.fingerID);
-  Serial.print(" with confidence of "); Serial.println(finger.confidence);
+  Serial.print("Found ID #");
+  Serial.print(finger.fingerID);
+  Serial.print(" with confidence of ");
+  Serial.println(finger.confidence);
 
   //return finger.fingerID;
   return p;
@@ -449,26 +543,11 @@ void gyroscope_sensor_reading() {
   delay(1000);
 }
 
-void PIR_sensors_troubleshoot() {
-  PIR_sensor_status_1 = digitalRead(PIR_SENSOR_1);
-  PIR_sensor_status_2 = digitalRead(PIR_SENSOR_2);
-  PIR_sensor_status_3 = digitalRead(PIR_SENSOR_3);
-  PIR_sensor_status_4 = digitalRead(PIR_SENSOR_4);
-  Serial.print("PIR1: ");
-  Serial.print(PIR_sensor_status_1);
-  Serial.print("; PIR2: ");
-  Serial.print(PIR_sensor_status_2);
-  Serial.print("; PIR3: ");
-  Serial.print(PIR_sensor_status_3);
-  Serial.print("; PIR4: ");
-  Serial.println(PIR_sensor_status_4);
-}
-
 bool firebase_set_int(String endpoint, int value) {
-  if(Firebase.RTDB.setInt(&fbdo, endpoint, value)) {
-    Serial.println("PASSED");
-    Serial.println("PATH: " + fbdo.dataPath());
-    Serial.println("TYPE: " + fbdo.dataType());
+  if (Firebase.RTDB.setInt(&fbdo, endpoint, value)) {
+    // Serial.println("PASSED");
+    // Serial.println("PATH: " + fbdo.dataPath());
+    // Serial.println("TYPE: " + fbdo.dataType());
     return true;
   } else {
     Serial.println("FAILED");
@@ -478,10 +557,10 @@ bool firebase_set_int(String endpoint, int value) {
 }
 
 bool firebase_set_bool(String endpoint, bool value) {
-  if(Firebase.RTDB.setBool(&fbdo, endpoint, value)) {
-    Serial.println("PASSED");
-    Serial.println("PATH: " + fbdo.dataPath());
-    Serial.println("TYPE: " + fbdo.dataType());
+  if (Firebase.RTDB.setBool(&fbdo, endpoint, value)) {
+    // Serial.println("PASSED");
+    // Serial.println("PATH: " + fbdo.dataPath());
+    // Serial.println("TYPE: " + fbdo.dataType());
     return true;
   } else {
     Serial.println("FAILED");
@@ -491,16 +570,68 @@ bool firebase_set_bool(String endpoint, bool value) {
 }
 
 bool firebase_set_float(String endpoint, float value) {
-  if(Firebase.RTDB.setFloat(&fbdo, endpoint, value)) {
-    Serial.println("PASSED");
-    Serial.println("PATH: " + fbdo.dataPath());
-    Serial.println("TYPE: " + fbdo.dataType());
+  if (Firebase.RTDB.setFloat(&fbdo, endpoint, value)) {
+    // Serial.println("PASSED");
+    // Serial.println("PATH: " + fbdo.dataPath());
+    // Serial.println("TYPE: " + fbdo.dataType());
     return true;
   } else {
     Serial.println("FAILED");
     Serial.println("REASON: " + fbdo.errorReason());
     return false;
   }
+}
+
+bool firebase_set_string(String endpoint, String value) {
+  if (Firebase.RTDB.setString(&fbdo, endpoint, value)) {
+    // Serial.println("PASSED");
+    // Serial.println("PATH: " + fbdo.dataPath());
+    // Serial.println("TYPE: " + fbdo.dataType());
+    return true;
+  } else {
+    Serial.println("FAILED");
+    Serial.println("REASON: " + fbdo.errorReason());
+    return false;
+  }
+}
+
+bool firebase_get_int(String endpoint, int& returnValue) {
+  if (Firebase.RTDB.getInt(&fbdo, endpoint)) {
+    if (fbdo.dataType() == "int") {
+      returnValue = fbdo.intData();
+      Serial.println(returnValue);
+      return true;
+    }
+  } else {
+    Serial.println(fbdo.errorReason());
+  }
+  return false;
+}
+
+bool firebase_get_string(String endpoint, String& returnValue) {
+  if (Firebase.RTDB.getString(&fbdo, endpoint)) {
+    if (fbdo.dataType() == "string") {
+      returnValue = fbdo.stringData();
+      // Serial.println(returnValue);
+      return true;
+    }
+  } else {
+    Serial.println(fbdo.errorReason());
+  }
+  return false;
+}
+
+bool firebase_get_bool(String endpoint, bool& returnValue) {
+  if (Firebase.RTDB.getBool(&fbdo, endpoint)) {
+    if (fbdo.dataType() == "boolean") {
+      returnValue = fbdo.boolData();
+      Serial.println(returnValue);
+      return true;
+    }
+  } else {
+    Serial.println(fbdo.errorReason());
+  }
+  return false;
 }
 
 void buzzer_fire_beep() {
@@ -519,19 +650,20 @@ void buzzer_turn_off() {
 
 void close_door() {
   door_servo.attach(SERVO_ACTUATOR);
-  for (int pos = 115; pos >= 0; pos -= 1) { // goes from 180 degrees to 0 degrees
-    door_servo.write(pos);              // tell servo to go to position in variable 'pos'
-    delay(5);                       // waits 15ms for the servo to reach the position
+  for (int pos = 115; pos >= 0; pos -= 1) {  // goes from 180 degrees to 0 degrees
+    door_servo.write(pos);                   // tell servo to go to position in variable 'pos'
+    delay(5);                                // waits 15ms for the servo to reach the position
   }
   door_servo.detach();
 }
 
 void open_door() {
   door_servo.attach(SERVO_ACTUATOR);
-  for (int pos = 0; pos <= 115; pos += 1) { // goes from 0 degrees to 180 degrees
+  for (int pos = 0; pos <= 115; pos += 1) {  // goes from 0 degrees to 180 degrees
     // in steps of 1 degree
-    door_servo.write(pos);              // tell servo to go to position in variable 'pos'
-    delay(5);                       // waits 15ms for the servo to reach the position
+    door_servo.write(pos);  // tell servo to go to position in variable 'pos'
+    delay(5);               // waits 15ms for the servo to reach the position
   }
   door_servo.detach();
 }
+

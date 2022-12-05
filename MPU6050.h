@@ -1,20 +1,19 @@
-// #ifndef FIR_h
-// #define FIR_h
+#ifndef MPU6050_h
+#define MPU6050_h
 
-// #include "Axis.h"
+#include "Axis.h"
 
-// using namespace std;
+class MPU6050 {
+  private:
+    Axis _accelerometer, _gyroscope;
+  public:
+    MPU6050();
+    MPU6050(Axis accelerometer, Axis gyroscope);
+    Axis& getAccelerometer();
+    Axis& getGyroscope();
+    void setAccelerometer(Axis accelerometer);
+    void setGyroscope(Axis gyroscope);
+    bool isExceedThreshold(MPU6050 currentMPU6050, float accelThreshold, float gyroThreshold);
+};
 
-// class MPU6050 {
-//   private:
-//     Axis accelerometer, gyroscope;
-//   public:
-//     MPU6050();
-//     MPU6050(Axis accelerometer, Axis gyroscope);
-//     Axis getAccelerometer();
-//     Axis getGyroscope();
-//     void setAccelerometer(float x, float y, float z);
-//     void setGyroscope(float x, float y, float z);
-// };
-
-// #endif
+#endif
