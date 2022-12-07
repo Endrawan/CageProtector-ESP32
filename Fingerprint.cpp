@@ -10,6 +10,10 @@ Fingerprint::Fingerprint(int status, int enroll_status) {
   _enroll_status = enroll_status;
 }
 
+int Fingerprint::getSteps() {
+  return _steps;
+}
+
 int Fingerprint::getStatus() {
   return _status;
 }
@@ -20,6 +24,10 @@ int Fingerprint::getEnrollStatus() {
 
 void Fingerprint::setStatus(int status) {
   _status = status;
+}
+
+void Fingerprint::setSteps(int steps) {
+  _steps = steps;
 }
 
 void Fingerprint::setEnrollStatus(int enroll_status) {
